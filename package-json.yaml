@@ -1,0 +1,144 @@
+id: package-json-disclosure
+
+info:
+  name: NPM package.json / package-lock.json Disclosure
+  author: geeknik,afaq,noraj,pdn-nuclei
+  severity: info
+  description: |
+    Detects exposure of package.json or package-lock.json files, which contain metadata for Node.js projects managed by npm, yarn, or pnpm. These files often reveal project structure, dependencies (including vulnerable versions), scripts, and potentially sensitive information like API keys or tokens if misconfigured.
+
+    Exposure can lead to information disclosure (CWE-200), enabling attackers to map the application, identify vulnerable dependencies for supply chain attacks, or exploit custom scripts.
+
+    Real-world risks include:
+    - Supply chain compromises via outdated/vulnerable dependencies (e.g., similar to npm's ua-parser-js incident in 2021 where malicious code was injected).
+    - Reconnaissance for further attacks, as seen in various bug bounty reports where package.json leaks revealed internal project details.
+
+    Remediation:
+    - Ensure these files are not publicly accessible; add to .gitignore and configure web server rules (e.g., Nginx: location ~ /\. { deny all; }).
+    - Use environment variables for sensitive data instead of hardcoding in package.json.
+    - Regularly audit dependencies with tools like npm audit or Snyk.
+    - If exposure is unavoidable (e.g., public repos), sanitize files to remove sensitive fields.
+  reference:
+    - https://docs.npmjs.com/cli/v9/configuring-npm/package-json
+    - https://classic.yarnpkg.com/lang/en/docs/package-json/
+    - https://pnpm.io/package_json
+    - https://owasp.org/www-community/attacks/Information_exposure_through_directory_listing # Related to info disclosure
+    - https://hackerone.com/reports/1071994 # Example bug bounty report on package.json exposure (GitLab)
+    - https://nvd.nist.gov/vuln/detail/CVE-2021-43618 # npm ua-parser-js supply chain attack via malicious package
+    - https://blog.npmjs.org/post/181807056045/anatomy-of-an-audit-fail
+  metadata:
+    verified: true
+    max-request: 20
+    stop-at-first-match: true
+    cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+    cvss-score: 5.3
+    cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
+    classification:
+      cvss-metrics: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N
+      cvss-score: 5.3
+      cwe-id: CWE-200
+  tags: config,exposure,node,npm,vuln,javascript,supply-chain,disclosure
+
+http:
+  - method: GET
+    path:
+      # Standard paths
+      - "{{BaseURL}}/package.json"
+      - "{{BaseURL}}/package-lock.json"
+      # Common subdirectory variations
+      - "{{BaseURL}}/app/package.json"
+      - "{{BaseURL}}/src/package.json"
+      - "{{BaseURL}}/client/package.json"
+      - "{{BaseURL}}/server/package.json"
+      - "{{BaseURL}}/public/package.json"
+      - "{{BaseURL}}/static/package.json"
+      # Case variations
+      - "{{BaseURL}}/Package.json"
+      - "{{BaseURL}}/PACKAGE.JSON"
+      - "{{BaseURL}}/Package-Lock.json"
+      # Encoded and bypass paths
+      - "{{BaseURL}}/%2epackage.json"  # ./package.json
+      - "{{BaseURL}}/%2e%2fpackage.json"  # ../package.json (double encoded)
+      - "{{BaseURL}}/%70ackage.json"  # Partial encoding bypass
+      - "{{BaseURL}}/package%2ejson"  # . encoded
+      # Path traversal attempts (common misconfigs)
+      - "{{BaseURL}}/../package.json"
+      - "{{BaseURL}}/%2e%2e/package.json"
+      - "{{BaseURL}}/....//package.json"
+      # Additional common locations
+      - "{{BaseURL}}/.env/package.json"  # Unlikely but checks misconfigs
+      - "{{BaseURL}}/node_modules/package.json"  # Rare exposure
+
+    matchers-condition: and
+    matchers:
+      # Status and content-type check
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        part: header
+        words:
+          - "application/json"
+        condition: and
+
+      # JSON structure validation and key fields
+      - type: dsl
+        dsl:
+          - "contains('\"name\"') && contains('\"version\"') && (contains('\"dependencies\"') || contains('\"devDependencies\"') || contains('\"scripts\"'))"
+        condition: and
+
+      # Additional keywords for confirmation
+      - type: word
+        words:
+          - "dependencies"
+          - "scripts"
+        condition: or
+        part: body
+
+      # Negative matcher to reduce FPs (e.g., avoid HTML pages or generic JSON)
+      - type: word
+        words:
+          - "<html"
+          - "404 Not Found"
+          - "error"
+        part: body
+        condition: and
+        negative: true
+
+    extractors:
+      # Extract project name
+      - type: regex
+        name: project_name
+        part: body
+        regex:
+          - '"name"\\s*:\\s*"([^"]+)"'
+
+      # Extract version
+      - type: regex
+        name: project_version
+        part: body
+        regex:
+          - '"version"\\s*:\\s*"([^"]+)"'
+
+      # Extract dependencies (simplified, captures as array-like)
+      - type: regex
+        name: dependencies
+        part: body
+        regex:
+          - '"dependencies"\\s*:\\s*\\{([^}]+)\\}'
+
+      # Extract scripts
+      - type: regex
+        name: scripts
+        part: body
+        regex:
+          - '"scripts"\\s*:\\s*\\{([^}]+)\\}'
+
+      # Detect sensitive fields (e.g., tokens - high-risk indicator)
+      - type: regex
+        name: sensitive_data
+        part: body
+        internal: true  # Don't extract publicly if sensitive
+        regex:
+          - '"(api_key|token|secret|password)"\\s*:\\s*"[^"]*"'
